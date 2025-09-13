@@ -28,6 +28,7 @@ export function ChartCanvas() {
     return out
   }, [table, plot.xKey, plot.yKey])
   const regression = useDatasetStore((s) => s.regression)
+  const prediction = useDatasetStore((s) => s.prediction)
   const recompute = useDatasetStore((s) => s.recomputeRegression)
   useEffect(() => {
     if (regression.enabled) recompute()
@@ -48,8 +49,28 @@ export function ChartCanvas() {
   }, [])
   const height = Math.max(200, Math.round(width / (view.aspect || 1)))
 
-  const xVals = pairs.map((p) => p.x)
-  const yVals = pairs.map((p) => p.y)
+  // compute predicted point (data coords) if enabled
+  const predicted = useMemo(() => {
+    if (!prediction.enabled || !regression.enabled || !regression.result) return undefined as undefined | { x: number; y: number }
+    const v = prediction.value
+    if (!Number.isFinite(v as number)) return undefined
+    const { a, b } = regression.result
+    if (prediction.mode === 'x') {
+      const x = v as number
+      const y = a * x + b
+      if (!Number.isFinite(y)) return undefined
+      return { x, y }
+    } else {
+      if (a === 0) return undefined
+      const y = v as number
+      const x = (y - b) / a
+      if (!Number.isFinite(x)) return undefined
+      return { x, y }
+    }
+  }, [prediction.enabled, prediction.mode, prediction.value, regression.enabled, regression.result])
+
+  const xVals = useMemo(() => [...pairs.map((p) => p.x), ...(predicted ? [predicted.x] : [])], [pairs, predicted])
+  const yVals = useMemo(() => [...pairs.map((p) => p.y), ...(predicted ? [predicted.y] : [])], [pairs, predicted])
   const domainX = view.domainX ?? autoDomain(xVals)
   const domainY = view.domainY ?? autoDomain(yVals)
 
@@ -204,7 +225,34 @@ export function ChartCanvas() {
           {pairs.map((p, i) => (
             <circle key={i} cx={xScale(p.x)} cy={yScale(p.y)} r={plot.pointRadius ?? 5.5} fill={plot.pointColor || plot.color || COLORS.data} />
           ))}
+          {/* predicted point (draw atop series) */}
+          {predicted && (
+            <circle cx={xScale(predicted.x)} cy={yScale(predicted.y)} r={(plot.pointRadius ?? 5.5) + 1.5} fill={prediction.color || '#ff4d8d'} />
+          )}
         </g>
+        {/* label for predicted point outside clip so it's visible */}
+        {predicted && (
+          (() => {
+            const px = xScale(predicted.x)
+            const py = yScale(predicted.y)
+            const left = px > width / 2
+            const tx = left ? px - 8 : px + 8
+            const anchor = left ? 'end' : 'start'
+            const fmt = (n: number) => {
+              const abs = Math.abs(n)
+              if (abs >= 1e6) return `${(n/1e6).toFixed(2)}M`
+              if (abs >= 1e3) return `${(n/1e3).toFixed(2)}k`
+              return n % 1 === 0 ? String(n) : Number(n.toPrecision(4)).toString()
+            }
+            return (
+              <g>
+                <text x={tx} y={py - 8} textAnchor={anchor as any} fill={prediction.color || '#ff4d8d'} fontSize={12} fontWeight={600}>
+                  ({fmt(predicted.x)}, {fmt(predicted.y)})
+                </text>
+              </g>
+            )
+          })()
+        )}
         {/* regression annotation, large at bottom for export */}
         {regression.enabled && regression.result && (
           <g>

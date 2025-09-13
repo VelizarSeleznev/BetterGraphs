@@ -42,6 +42,15 @@ export interface RegressionSpec {
   error?: string
 }
 
+export type PredictionMode = 'x' | 'y'
+
+export interface PredictionSpec {
+  enabled: boolean
+  mode: PredictionMode
+  value?: number
+  color?: string
+}
+
 export interface ViewSpec {
   aspect: number // width/height
   normalize: boolean
@@ -56,6 +65,7 @@ export interface DatasetState {
   table: TableData
   plot: PlotSpec
   regression: RegressionSpec
+  prediction: PredictionSpec
   view: ViewSpec
 }
 

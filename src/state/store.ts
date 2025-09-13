@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { v4 as uuidv4 } from 'uuid'
-import type { Column, DatasetState, TableData, XYPair } from '../types'
+import type { Column, DatasetState, PredictionMode, TableData, XYPair } from '../types'
 import { computeRegression } from '../utils/regression'
 import { autoDomain, applyDisplayTransforms, dropNaNFinite, hasVariance } from '../utils/transforms'
 
@@ -33,6 +33,7 @@ function defaultState(): DatasetState {
       pointRadius: 5.5,
     },
     regression: { enabled: false, throughZero: false },
+    prediction: { enabled: false, mode: 'x', color: '#ff4d8d' },
     view: {
       aspect: 1,
       normalize: false,
@@ -57,7 +58,7 @@ export type Store = DatasetState & {
   setXY: (xKey: string, yKey: string) => void
   setAxisLabels: (x: string, y: string) => void
   setMode: (mode: 'scatter' | 'line') => void
-  setPlotStyle: (s: Partial<{ color: string; lineWidth: number; pointRadius: number }>) => void
+  setPlotStyle: (s: Partial<{ color: string; lineWidth: number; pointRadius: number; lineColor: string; pointColor: string }>) => void
 
   // view ops
   setAspect: (a: number) => void
@@ -71,6 +72,12 @@ export type Store = DatasetState & {
   toggleRegression: (enabled: boolean) => void
   setThroughZero: (b: boolean) => void
   recomputeRegression: () => void
+
+  // prediction point
+  setPredictionEnabled: (b: boolean) => void
+  setPredictionMode: (m: PredictionMode) => void
+  setPredictionValue: (v?: number) => void
+  setPredictionColor: (c: string) => void
 
   // derived
   numericPairs: () => XYPair[]
@@ -146,7 +153,7 @@ export const useDatasetStore = create<Store>()((set, get) => ({
   fitNicely: () => {
     const s = get()
     const pairs = s.numericPairs()
-    const { view, regression } = s
+    const { view, regression, prediction } = s
     const [displayPairs] = applyDisplayTransforms(pairs, view)
     const xValues = displayPairs.map((p) => p.x)
     const yValues = displayPairs.map((p) => p.y)
@@ -157,6 +164,31 @@ export const useDatasetStore = create<Store>()((set, get) => ({
       const y0 = regression.result.a * xMin + regression.result.b
       const y1 = regression.result.a * xMax + regression.result.b
       yValues.push(y0, y1)
+    }
+
+    // Include prediction point if enabled and solvable
+    if (prediction.enabled && regression.enabled && regression.result) {
+      const { a, b } = regression.result
+      const v = prediction.value
+      if (Number.isFinite(v as number)) {
+        if (prediction.mode === 'x') {
+          const x = v as number
+          const y = a * x + b
+          if (Number.isFinite(y)) {
+            xValues.push(x)
+            yValues.push(y)
+          }
+        } else {
+          if (a !== 0) {
+            const y = v as number
+            const x = (y - b) / a
+            if (Number.isFinite(x)) {
+              xValues.push(x)
+              yValues.push(y)
+            }
+          }
+        }
+      }
     }
 
     const dx = autoDomain(xValues)
@@ -176,6 +208,11 @@ export const useDatasetStore = create<Store>()((set, get) => ({
     const res = computeRegression(pairs, s.regression.throughZero)
     set({ regression: { ...s.regression, result: res, error: undefined } })
   },
+
+  setPredictionEnabled: (b) => set((s) => ({ prediction: { ...s.prediction, enabled: b } })),
+  setPredictionMode: (m) => set((s) => ({ prediction: { ...s.prediction, mode: m } })),
+  setPredictionValue: (v) => set((s) => ({ prediction: { ...s.prediction, value: v } })),
+  setPredictionColor: (c) => set((s) => ({ prediction: { ...s.prediction, color: c } })),
 
   numericPairs: () => {
     const s = get()
