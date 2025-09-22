@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { v4 as uuidv4 } from 'uuid'
-import type { Column, DatasetState, PredictionMode, TableData, XYPair } from '../types'
-import { computeRegression } from '../utils/regression'
+import type { Column, DatasetState, PredictionMode, TableData, XYPair, RegressionModel } from '../types'
+import { computeLinearRegression, computeQuadraticRegression } from '../utils/regression'
 import { autoDomain, applyDisplayTransforms, dropNaNFinite, hasVariance } from '../utils/transforms'
 
 function makeInitialTable(): TableData {
@@ -32,7 +32,7 @@ function defaultState(): DatasetState {
       lineWidth: 3,
       pointRadius: 5.5,
     },
-    regression: { enabled: false, throughZero: false },
+    regression: { enabled: false, throughZero: false, model: 'linear' },
     prediction: { enabled: false, mode: 'x', color: '#ff4d8d' },
     view: {
       aspect: 1,
@@ -71,6 +71,7 @@ export type Store = DatasetState & {
   // regression
   toggleRegression: (enabled: boolean) => void
   setThroughZero: (b: boolean) => void
+  setRegressionModel: (m: RegressionModel) => void
   recomputeRegression: () => void
 
   // prediction point
@@ -158,12 +159,28 @@ export const useDatasetStore = create<Store>()((set, get) => ({
     const xValues = displayPairs.map((p) => p.x)
     const yValues = displayPairs.map((p) => p.y)
 
-    // If regression is enabled and has a result, include line endpoints in domain
+    // If regression is enabled and has a result, include curve endpoints in domain
     if (regression.enabled && regression.result && Number.isFinite(regression.result.a) && Number.isFinite(regression.result.b)) {
       const [xMin, xMax] = autoDomain(xValues)
-      const y0 = regression.result.a * xMin + regression.result.b
-      const y1 = regression.result.a * xMax + regression.result.b
-      yValues.push(y0, y1)
+      if ((regression.result.model || 'linear') === 'quadratic' && Number.isFinite(regression.result.c as number)) {
+        const a = regression.result.a
+        const b = regression.result.b
+        const c = regression.result.c as number
+        const f = (x: number) => a * x * x + b * x + c
+        const y0 = f(xMin)
+        const y1 = f(xMax)
+        yValues.push(y0, y1)
+        if (a !== 0) {
+          const xv = -b / (2 * a)
+          if (xv > xMin && xv < xMax) yValues.push(f(xv))
+        }
+      } else {
+        const a = regression.result.a
+        const b = regression.result.b
+        const y0 = a * xMin + b
+        const y1 = a * xMax + b
+        yValues.push(y0, y1)
+      }
     }
 
     // Include prediction point if enabled and solvable
@@ -171,19 +188,55 @@ export const useDatasetStore = create<Store>()((set, get) => ({
       const { a, b } = regression.result
       const v = prediction.value
       if (Number.isFinite(v as number)) {
-        if (prediction.mode === 'x') {
-          const x = v as number
-          const y = a * x + b
-          if (Number.isFinite(y)) {
-            xValues.push(x)
-            yValues.push(y)
+        const isQuad = (regression.result.model || 'linear') === 'quadratic'
+        if (!isQuad) {
+          if (prediction.mode === 'x') {
+            const x = v as number
+            const y = a * x + b
+            if (Number.isFinite(y)) {
+              xValues.push(x)
+              yValues.push(y)
+            }
+          } else {
+            if (a !== 0) {
+              const y = v as number
+              const x = (y - b) / a
+              if (Number.isFinite(x)) {
+                xValues.push(x)
+                yValues.push(y)
+              }
+            }
           }
         } else {
-          if (a !== 0) {
-            const y = v as number
-            const x = (y - b) / a
-            if (Number.isFinite(x)) {
+          const c = regression.result.c as number
+          if (prediction.mode === 'x') {
+            const x = v as number
+            const y = a * x * x + b * x + c
+            if (Number.isFinite(y)) {
               xValues.push(x)
+              yValues.push(y)
+            }
+          } else {
+            // solve ax^2 + bx + (c - y) = 0
+            const y = v as number
+            const A = a
+            const B = b
+            const C = (c as number) - y
+            let xSol: number | undefined
+            if (Math.abs(A) < 1e-12) {
+              if (B !== 0) xSol = -C / B
+            } else {
+              const D = B * B - 4 * A * C
+              if (D >= 0) {
+                const r1 = (-B - Math.sign(B) * Math.sqrt(D)) / (2 * A)
+                const r2 = C / (A * r1) * -1
+                const [xxMin, xxMax] = autoDomain(xValues)
+                const xc = (xxMin + xxMax) / 2
+                xSol = Math.abs(r1 - xc) <= Math.abs(r2 - xc) ? r1 : r2
+              }
+            }
+            if (Number.isFinite(xSol as number)) {
+              xValues.push(xSol as number)
               yValues.push(y)
             }
           }
@@ -198,6 +251,7 @@ export const useDatasetStore = create<Store>()((set, get) => ({
 
   toggleRegression: (enabled) => set((s) => ({ regression: { ...s.regression, enabled } })),
   setThroughZero: (b) => set((s) => ({ regression: { ...s.regression, throughZero: b } })),
+  setRegressionModel: (m) => set((s) => ({ regression: { ...s.regression, model: m } })),
   recomputeRegression: () => {
     const s = get()
     const pairs = s.numericPairs()
@@ -205,7 +259,10 @@ export const useDatasetStore = create<Store>()((set, get) => ({
       set({ regression: { ...s.regression, result: undefined, error: 'Regression undefined (X has no variance).' } })
       return
     }
-    const res = computeRegression(pairs, s.regression.throughZero)
+    const model = s.regression.model || 'linear'
+    const res = model === 'quadratic'
+      ? computeQuadraticRegression(pairs)
+      : computeLinearRegression(pairs, s.regression.throughZero)
     set({ regression: { ...s.regression, result: res, error: undefined } })
   },
 

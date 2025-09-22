@@ -19,6 +19,7 @@ export function RegressionPanel() {
   const regression = useDatasetStore((s) => s.regression)
   const toggle = useDatasetStore((s) => s.toggleRegression)
   const setThroughZero = useDatasetStore((s) => s.setThroughZero)
+  const setRegressionModel = useDatasetStore((s) => s.setRegressionModel)
   const recompute = useDatasetStore((s) => s.recomputeRegression)
   const prediction = useDatasetStore((s) => s.prediction)
   const setPredictionEnabled = useDatasetStore((s) => s.setPredictionEnabled)
@@ -53,18 +54,40 @@ export function RegressionPanel() {
           onChange={(e) => { toggle(e.target.checked); if (e.target.checked) recompute() }} aria-label="Enable regression" />
         <label htmlFor="reg-toggle" className="font-medium">Linear Regression</label>
       </div>
-      <div className="flex items-center gap-2 mb-3">
-        <input id="through-zero" type="checkbox" checked={regression.throughZero}
-          onChange={(e) => { setThroughZero(e.target.checked); if (regression.enabled) recompute() }} aria-label="Force intercept = 0" />
-        <label htmlFor="through-zero">Force intercept = 0</label>
+      <div className="flex items-center gap-3 mb-3">
+        <label style={{ color: 'var(--muted)' }}>Model</label>
+        <select className="input" value={regression.model || 'linear'} onChange={(e) => { setRegressionModel(e.target.value as any); if (regression.enabled) recompute() }} aria-label="Regression model">
+          <option value="linear">Linear</option>
+          <option value="quadratic">Quadratic</option>
+        </select>
       </div>
+      {(regression.model || 'linear') === 'linear' && (
+        <div className="flex items-center gap-2 mb-3">
+          <input id="through-zero" type="checkbox" checked={regression.throughZero}
+            onChange={(e) => { setThroughZero(e.target.checked); if (regression.enabled) recompute() }} aria-label="Force intercept = 0" />
+          <label htmlFor="through-zero">Force intercept = 0</label>
+        </div>
+      )}
       {regression.enabled && (
         <div className="text-sm">
           {regression.error ? (
             <div className="text-red-400">{regression.error}</div>
           ) : regression.result ? (
             <div>
-              <div>y = {fmtNum(regression.result.a)}·x + {fmtNum(regression.result.b)}</div>
+              <div>
+                {(() => {
+                  const r = regression.result!
+                  if ((r.model || 'linear') === 'quadratic' && Number.isFinite(r.c as number)) {
+                    const a = fmtNum(r.a)
+                    const b = fmtNum(Math.abs(r.b))
+                    const c = fmtNum(Math.abs(r.c as number))
+                    const bSign = r.b >= 0 ? '+' : '−'
+                    const cSign = (r.c as number) >= 0 ? '+' : '−'
+                    return <>y = {a}·x² {bSign} {b}·x {cSign} {c}</>
+                  }
+                  return <>y = {fmtNum(r.a)}·x + {fmtNum(r.b)}</>
+                })()}
+              </div>
               <div>R² = {fmtNum(regression.result.r2, 4)}; N = {regression.result.n}</div>
               {/* Prediction controls */}
               <div className="mt-4 pt-3 border-t" style={{ borderColor: 'var(--border)' }}>
@@ -97,15 +120,37 @@ export function RegressionPanel() {
                       const res = regression.result!
                       const v = prediction.value
                       if (!Number.isFinite(v as number)) return null
+                      const isQuad = (res.model || 'linear') === 'quadratic'
                       let x: number, y: number
                       if (prediction.mode === 'x') {
                         x = v as number
-                        y = res.a * x + res.b
+                        y = isQuad ? (res.a * x * x + res.b * x + (res.c as number)) : (res.a * x + res.b)
                       } else {
-                        const denom = res.a
-                        if (denom === 0) return <div className="col-span-2 text-red-400">Cannot solve X when slope = 0</div>
                         y = v as number
-                        x = (y - res.b) / denom
+                        if (!isQuad) {
+                          const denom = res.a
+                          if (denom === 0) return <div className="col-span-2 text-red-400">Cannot solve X when slope = 0</div>
+                          x = (y - res.b) / denom
+                        } else {
+                          const A = res.a
+                          const B = res.b
+                          const C = (res.c as number) - y
+                          if (Math.abs(A) < 1e-12) {
+                            if (B === 0) return <div className="col-span-2 text-red-400">No solution for X</div>
+                            x = -C / B
+                          } else {
+                            const D = B * B - 4 * A * C
+                            if (D < 0) return <div className="col-span-2 text-red-400">No real solution for X</div>
+                            const r1 = (-B - Math.sign(B) * Math.sqrt(D)) / (2 * A)
+                            const r2 = C / (A * r1) * -1
+                            // choose the root nearer to data center
+                            const xs = pairs.map((p) => p.x)
+                            const xMin = Math.min(...xs)
+                            const xMax = Math.max(...xs)
+                            const xc = (xMin + xMax) / 2
+                            x = Math.abs(r1 - xc) <= Math.abs(r2 - xc) ? r1 : r2
+                          }
+                        }
                       }
                       const fmt = (n: number) => Number.isFinite(n) ? Number(n.toPrecision(4)) : '—'
                       return <div className="col-span-2" style={{ color: 'var(--muted)' }}>Point: ({fmt(x)}, {fmt(y)})</div>

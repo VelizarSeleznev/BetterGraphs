@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computeRegression } from './regression'
+import { computeRegression, computeQuadraticRegression } from './regression'
 
 describe('linear regression', () => {
   it('fits a perfect line', () => {
@@ -34,3 +34,17 @@ describe('linear regression', () => {
   })
 })
 
+describe('quadratic regression', () => {
+  it('fits a simple parabola', () => {
+    // y = 2x^2 + 3x + 1
+    const pts = [] as { x: number; y: number }[]
+    for (let x = -3; x <= 3; x++) pts.push({ x, y: 2 * x * x + 3 * x + 1 })
+    const r = computeQuadraticRegression(pts)
+    expect(r.n).toBe(7)
+    expect(r.model).toBe('quadratic')
+    expect(r.r2).toBeCloseTo(1, 10)
+    expect(r.a).toBeCloseTo(2, 6)
+    expect(r.b).toBeCloseTo(3, 6)
+    expect(r.c!).toBeCloseTo(1, 6)
+  })
+})

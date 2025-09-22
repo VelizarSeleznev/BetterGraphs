@@ -32,7 +32,7 @@ export function ChartCanvas() {
   const recompute = useDatasetStore((s) => s.recomputeRegression)
   useEffect(() => {
     if (regression.enabled) recompute()
-  }, [pairsRaw, regression.enabled, regression.throughZero])
+  }, [pairsRaw, regression.enabled, regression.throughZero, regression.model])
 
   const [pairs, messages] = applyDisplayTransforms(pairsRaw, view)
 
@@ -55,19 +55,43 @@ export function ChartCanvas() {
     const v = prediction.value
     if (!Number.isFinite(v as number)) return undefined
     const { a, b } = regression.result
+    const isQuad = (regression.result.model || 'linear') === 'quadratic'
     if (prediction.mode === 'x') {
       const x = v as number
-      const y = a * x + b
+      const y = isQuad ? (a * x * x + b * x + (regression.result.c as number)) : (a * x + b)
       if (!Number.isFinite(y)) return undefined
       return { x, y }
     } else {
-      if (a === 0) return undefined
       const y = v as number
-      const x = (y - b) / a
-      if (!Number.isFinite(x)) return undefined
-      return { x, y }
+      if (!isQuad) {
+        if (a === 0) return undefined
+        const x = (y - b) / a
+        if (!Number.isFinite(x)) return undefined
+        return { x, y }
+      } else {
+        const c = regression.result.c as number
+        const A = a
+        const B = b
+        const C = c - y
+        if (Math.abs(A) < 1e-12) {
+          if (B === 0) return undefined
+          const x = -C / B
+          if (!Number.isFinite(x)) return undefined
+          return { x, y }
+        }
+        const D = B * B - 4 * A * C
+        if (D < 0) return undefined
+        const r1 = (-B - Math.sign(B) * Math.sqrt(D)) / (2 * A)
+        const r2 = C / (A * r1) * -1
+        // pick root nearest to x domain center
+        const [xxMin, xxMax] = view.domainX ?? autoDomain(pairs.map((p) => p.x))
+        const xc = (xxMin + xxMax) / 2
+        const x = Math.abs(r1 - xc) <= Math.abs(r2 - xc) ? r1 : r2
+        if (!Number.isFinite(x)) return undefined
+        return { x, y }
+      }
     }
-  }, [prediction.enabled, prediction.mode, prediction.value, regression.enabled, regression.result])
+  }, [prediction.enabled, prediction.mode, prediction.value, regression.enabled, regression.result, view.domainX, pairs])
 
   const xVals = useMemo(() => [...pairs.map((p) => p.x), ...(predicted ? [predicted.x] : [])], [pairs, predicted])
   const yVals = useMemo(() => [...pairs.map((p) => p.y), ...(predicted ? [predicted.y] : [])], [pairs, predicted])
@@ -91,6 +115,7 @@ export function ChartCanvas() {
 
   const slopeWarn = useMemo(() => {
     if (!regression.enabled || !regression.result) return ''
+    if ((regression.result.model || 'linear') === 'quadratic') return ''
     const scrSlope = estimateScreenSlope(regression.result.a, (xScale(1) - xScale(0)) || 1, (yScale(0) - yScale(1)) || 1)
     return scrSlope > 10 ? 'Line is very steep; consider log/normalize/adjust aspect.' : ''
   }, [regression.result, xScale, yScale])
@@ -197,19 +222,44 @@ export function ChartCanvas() {
           {/* regression under points */}
           {regression.enabled && regression.result && Number.isFinite(regression.result.a) && Number.isFinite(regression.result.b) && (
             (() => {
-              const x0 = domainX[0]
-              const x1 = domainX[1]
-              const y0 = regression.result!.a * x0 + regression.result!.b
-              const y1 = regression.result!.a * x1 + regression.result!.b
-              return (
-                <LinePath
-                  data={[{ x: x0, y: y0 }, { x: x1, y: y1 }]}
-                  x={(d) => xScale(d.x)}
-                  y={(d) => yScale(d.y)}
-                  stroke={plot.lineColor || plot.color || COLORS.reg}
-                  strokeWidth={3}
-                />
-              )
+              const color = plot.lineColor || plot.color || COLORS.reg
+              if ((regression.result.model || 'linear') === 'quadratic' && Number.isFinite(regression.result.c as number)) {
+                const a = regression.result.a
+                const b = regression.result.b
+                const c = regression.result.c as number
+                const x0 = domainX[0]
+                const x1 = domainX[1]
+                const steps = 100
+                const data = Array.from({ length: steps + 1 }, (_, i) => {
+                  const t = i / steps
+                  const x = x0 + (x1 - x0) * t
+                  const y = a * x * x + b * x + c
+                  return { x, y }
+                })
+                return (
+                  <LinePath
+                    data={data}
+                    x={(d) => xScale(d.x)}
+                    y={(d) => yScale(d.y)}
+                    stroke={color}
+                    strokeWidth={3}
+                  />
+                )
+              } else {
+                const x0 = domainX[0]
+                const x1 = domainX[1]
+                const y0 = regression.result!.a * x0 + regression.result!.b
+                const y1 = regression.result!.a * x1 + regression.result!.b
+                return (
+                  <LinePath
+                    data={[{ x: x0, y: y0 }, { x: x1, y: y1 }]}
+                    x={(d) => xScale(d.x)}
+                    y={(d) => yScale(d.y)}
+                    stroke={color}
+                    strokeWidth={3}
+                  />
+                )
+              }
             })()
           )}
 
@@ -259,15 +309,23 @@ export function ChartCanvas() {
             {(() => {
               const a = regression.result!.a
               const b = regression.result!.b
+              const c = regression.result!.c
               const r2 = regression.result!.r2
               const n = regression.result!.n
               function fmt(n: number, sig = 4) {
                 if (!Number.isFinite(n)) return '—'
                 return String(Number(n.toPrecision(sig)))
               }
-              const lines = [`y = ${fmt(a)}·x + ${fmt(b)}`, `R² = ${fmt(r2, 4)}; N = ${n}`]
+              let eq: string
+              if ((regression.result!.model || 'linear') === 'quadratic' && Number.isFinite(c as number)) {
+                const cTerm = Number(c) >= 0 ? `+ ${fmt(Number(c))}` : `- ${fmt(Math.abs(Number(c)))}`
+                const bTerm = Number(b) >= 0 ? `+ ${fmt(Number(b))}·x` : `- ${fmt(Math.abs(Number(b)))}·x`
+                eq = `y = ${fmt(a)}·x² ${bTerm} ${cTerm}`
+              } else {
+                eq = `y = ${fmt(a)}·x + ${fmt(b)}`
+              }
+              const lines = [eq, `R² = ${fmt(r2, 4)}; N = ${n}`]
               const x = view.margins.left + 12
-              // Render the annotation below the X axis within the extra bottom margin
               const y = height - 8
               return (
                 <g>

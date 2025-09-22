@@ -31,8 +31,10 @@ export interface PlotSpec {
 export interface RegressionResult {
   a: number
   b: number
+  c?: number
   r2: number
   n: number
+  model: RegressionModel
 }
 
 export interface RegressionSpec {
@@ -40,7 +42,10 @@ export interface RegressionSpec {
   throughZero: boolean
   result?: RegressionResult
   error?: string
+  model?: RegressionModel
 }
+
+export type RegressionModel = 'linear' | 'quadratic'
 
 export type PredictionMode = 'x' | 'y'
 
